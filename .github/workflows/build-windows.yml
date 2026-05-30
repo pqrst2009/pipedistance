@@ -1,0 +1,51 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:    # 在 Actions 页手动触发
+  push:
+    tags:
+      - 'v*'           # 打 tag (例如 v0.2.0) 自动构建
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 预下载 OCR 模型
+        run: python -c "from rapidocr import RapidOCR; import numpy as np; RapidOCR()(np.zeros((10,10,3), dtype='uint8'))"
+
+      - name: PyInstaller 打包
+        run: pyinstaller --noconfirm packaging/PipeDistance.spec
+
+      - name: 打 zip
+        shell: pwsh
+        run: Compress-Archive -Path dist/PipeDistance/* -DestinationPath PipeDistance-windows.zip -Force
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PipeDistance-windows
+          path: PipeDistance-windows.zip
+          retention-days: 30
+
+      - name: 上传到 Release（仅 tag 触发时）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PipeDistance-windows.zip
+          generate_release_notes: true

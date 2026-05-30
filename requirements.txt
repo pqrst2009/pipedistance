@@ -1,0 +1,22 @@
+# 运行依赖（指示性版本，立项当天用最新稳定版核对后固化）
+PySide6>=6.8,<6.10
+opencv-contrib-python>=4.10,<4.12
+numpy>=1.26,<3
+Pillow>=10.0
+shapely>=2.0
+networkx>=3.2
+openpyxl>=3.1
+python-docx>=1.1
+
+# OCR：rapidocr 主包 + onnxruntime 推理后端（rapidocr 不再捆绑 onnxruntime）。
+# 首次运行会从 modelscope 下载 ~16MB ONNX 模型到本地，之后全程离线。
+rapidocr>=1.4
+onnxruntime>=1.17
+# rapidocr-onnxruntime>=1.4   # 兼容旧 API 的备选打包
+
+# 可选：PDF 截图页导入（首页渲染）。未安装时仅支持位图格式。
+PyMuPDF>=1.24
+
+# 开发/打包
+pytest>=8.0
+pyinstaller>=6.10

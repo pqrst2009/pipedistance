@@ -1,0 +1,13 @@
+[project]
+name = "pipe-distance"
+version = "0.1.0"
+description = "离线图纸失效点测距软件（MVP / S1 骨架）"
+requires-python = ">=3.11,<3.13"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.black]
+line-length = 100
