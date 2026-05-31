@@ -79,12 +79,21 @@ class StarCenter:
 
 @dataclass(frozen=True)
 class StarDetectParams:
-    min_area: int = 120         # 小于此面积的填实区当作文字/噪声丢弃（实际星 ≥ 几百 px）
+    min_area: int = 80          # 小于此面积当噪声丢弃；实际 burst 标记常在 100-150 px
     max_area: int = 50000
     max_aspect_ratio: float = 1.35  # 单颗星 ≈ 1.0；> 1.35 推断为多星合体或文字
     # 空心星轮廓填实：先 close 再 drawContours FILLED。0 = 跳过（仅旧测试场景）
     fill_outline: bool = True
-    fill_close_kernel: int = 5
+    # 双通道 close kernel：大 kernel 抓空心五角星（线描有 AA 缝隙要桥接），
+    # 小 kernel(0) 抓白心红刺爆炸（任何 close 都会把 spike 抹平）。
+    # 两次检测后按中心距离去重，互不漏掉。
+    fill_close_kernels: tuple[int, ...] = (5, 0)
+    # 轮廓 bbox 面积超过此值时**不**填实——避免把红色边界框 / 大面积红色
+    # 阴影当成"巨型空心星"填满，吞掉里面真正的失效点。
+    # 经验：单颗星的 bbox 上限 ~ max_area * 4（含星尖之间的空角）。
+    fill_max_bbox_area: int = 200000
+    # 两通道结果去重半径（像素）：两通道命中位置距离 ≤ 此值视为同一颗
+    dedup_radius_px: float = 10.0
     # solidity = contourArea / hullArea；五角星 ≈ 0.45-0.80，圆/数字 ≈ ≥0.85
     use_solidity: bool = True
     min_solidity: float = 0.30
@@ -102,23 +111,43 @@ class StarDetectParams:
     peak_min_radius_px: float = 4.0   # 峰值高度（星内接圆半径下限），过滤文字
     # 进入拆分分支的门槛（小连通域 / 过实心 / 太瘦长的形状不会被误拆为多星）
     min_split_area: int = 1200         # 多星合体的连通域面积下限（避开"3.5"等文字合体）
+    # 连通域整体守门 solidity：低于此值不进入任何检测路径（含拆分），
+    # 用于挡掉巨型边界框 / 大块线描的 hollow ring（solidity 通常 <0.15）。
+    split_min_solidity: float = 0.20
 
 
 def detect_stars(red_mask: np.ndarray, params: StarDetectParams | None = None) -> list[StarCenter]:
-    """从红色掩膜检测五角星中心。
+    """从红色掩膜检测失效点（五角星 / 白心红刺爆炸）中心。
 
     输入：uint8 0/255 掩膜。
     输出：``StarCenter`` 列表，按面积降序。
 
-    新策略（更鲁棒，特别是重叠情形）：
-    1. 填实空心轮廓 → 连通域。
-    2. 对每个面积达到 ``min_area`` 的连通域，**一律**用距离变换 + 局部峰值找候选中心。
-       - 距离图峰值高度 ≈ 星的内接圆半径，文字笔画峰值远低于该阈值。
-    3. 峰数 ≥ 2 且连通域面积 ≥ ``min_split_area``：直接判为多颗合体星，每个峰一颗。
-    4. 峰数 = 1（或 = 0 但形状像单星）：用质心 + 严格形状校验确认。
+    双通道策略：
+    - 通道 1（close_kernel 大）：桥接空心五角星 outline 的 AA 缝隙，
+      让 drawContours FILLED 成出完整 silhouette。但同样会把爆炸 spike 抹平。
+    - 通道 2（close_kernel=0）：保留爆炸的 spike 特征，但对线描很薄、有缝隙的
+      空心五角星可能漏。
+    两通道命中按中心距离去重，互不漏掉。
     """
     p = params or StarDetectParams()
-    work_mask = _fill_outline(red_mask, p.fill_close_kernel) if p.fill_outline else red_mask
+    if not p.fill_outline:
+        return _detect_once(red_mask, p)
+
+    all_hits: list[StarCenter] = []
+    for k in p.fill_close_kernels:
+        work_mask = _fill_outline(red_mask, k, p.fill_max_bbox_area)
+        all_hits.extend(_detect_once(work_mask, p, _skip_fill=True))
+    return _dedup_centers(all_hits, p.dedup_radius_px)
+
+
+def _detect_once(
+    work_mask: np.ndarray,
+    p: StarDetectParams,
+    _skip_fill: bool = False,
+) -> list[StarCenter]:
+    """单通道检测：连通域 → 距离变换 + 形状校验。"""
+    if not _skip_fill and p.fill_outline:
+        work_mask = _fill_outline(work_mask, p.fill_close_kernels[0], p.fill_max_bbox_area)
     n, labels, stats, centroids = cv2.connectedComponentsWithStats(work_mask, connectivity=8)
     results: list[StarCenter] = []
 
@@ -133,6 +162,13 @@ def detect_stars(red_mask: np.ndarray, params: StarDetectParams | None = None) -
         ratio = max(w, h) / min(w, h)
         cx, cy = float(centroids[i, 0]), float(centroids[i, 1])
         comp = (labels == i).astype(np.uint8) * 255
+
+        # 早期 solidity 门槛：边界框 / 大尺寸线描形成的 hollow ring solidity ≈ 0.03，
+        # 不能让它们绕过拆分路径假装"多颗合体星"。真实星簇即使重叠 solidity 也 ≥ 0.25。
+        # use_solidity=False 时跳过此守门（旧测试场景）。
+        comp_solidity = _solidity(comp) if p.use_solidity else 1.0
+        if p.use_solidity and comp_solidity < p.split_min_solidity:
+            continue
 
         # 距离变换 + 局部峰值（始终运行）
         peaks: list[tuple[float, float, float]] = []
@@ -157,7 +193,7 @@ def detect_stars(red_mask: np.ndarray, params: StarDetectParams | None = None) -
             continue
 
         # 单峰 / 无峰：走严格单星形状校验
-        solidity = _solidity(comp)
+        solidity = comp_solidity
         conc = _concavity_count(comp, p.min_concavity) if p.use_concavity else 0
         passes_aspect = ratio <= p.max_aspect_ratio
         passes_solidity = (
@@ -195,6 +231,26 @@ def detect_stars(red_mask: np.ndarray, params: StarDetectParams | None = None) -
 
     results.sort(key=lambda s: s.area, reverse=True)
     return results
+
+
+def _dedup_centers(hits: list[StarCenter], radius_px: float) -> list[StarCenter]:
+    """按中心距离去重：两次通道命中相互覆盖时合并成同一颗，保留面积更大的。"""
+    if not hits:
+        return []
+    # 按面积降序，让"更可信"（更大 silhouette = 通道 1 抓到的填实星）先入库
+    sorted_hits = sorted(hits, key=lambda s: s.area, reverse=True)
+    kept: list[StarCenter] = []
+    r2 = radius_px * radius_px
+    for s in sorted_hits:
+        ok = True
+        for k in kept:
+            dx, dy = s.x - k.x, s.y - k.y
+            if dx * dx + dy * dy <= r2:
+                ok = False
+                break
+        if ok:
+            kept.append(s)
+    return kept
 
 
 def _two_centers_along_major_axis(component_mask: np.ndarray) -> list[tuple[float, float, float]]:
@@ -265,13 +321,18 @@ def _split_by_distance_peaks(
     return out
 
 
-def _fill_outline(mask: np.ndarray, close_kernel: int) -> np.ndarray:
+def _fill_outline(mask: np.ndarray, close_kernel: int,
+                  max_bbox_area: int | None = None) -> np.ndarray:
     """把空心轮廓填实成 silhouette。
 
     1. 先用闭运算修补轮廓上的细小断裂（如 1-2 像素的裂缝），
        让外轮廓在 ``findContours`` 时变成闭环。
     2. 用 ``drawContours(..., thickness=cv2.FILLED)`` 把外轮廓内部填满。
        对原本就是实心的星，此步几乎无副作用。
+
+    ``max_bbox_area`` 限制只填合理大小的轮廓：图纸里红色边界框 / 区域阴影
+    的 bbox 远大于单颗星，若不限制，drawContours FILLED 会把整片区域填实，
+    把里面的真实星标全部吞掉。
     """
     if close_kernel > 0:
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel, close_kernel))
@@ -280,23 +341,33 @@ def _fill_outline(mask: np.ndarray, close_kernel: int) -> np.ndarray:
     if not contours:
         return mask
     filled = mask.copy()
-    cv2.drawContours(filled, contours, -1, 255, thickness=cv2.FILLED)
+    for c in contours:
+        if max_bbox_area is not None:
+            x, y, w, h = cv2.boundingRect(c)
+            if w * h > max_bbox_area:
+                continue   # 边界框 / 大块阴影，跳过
+        cv2.drawContours(filled, [c], -1, 255, thickness=cv2.FILLED)
     return filled
 
 
 def _solidity(component_mask: np.ndarray) -> float:
-    """轮廓面积 / 凸包面积。五角星 ≈ 0.45-0.80。无效则返回 0。"""
+    """实际像素数 / 凸包面积。五角星 ≈ 0.45-0.80。无效则返回 0。
+
+    用 ``cv2.countNonZero`` 而非 ``cv2.contourArea``：后者把外轮廓当成填实多边形
+    算面积，对 hollow ring（如边界框线描）会错算成"完全填实"（1.0）。
+    像素计数才反映实际占用，hollow 形状的低 solidity 才能正确识别。
+    """
     contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     if not contours:
         return 0.0
     cnt = max(contours, key=cv2.contourArea)
     if len(cnt) < 3:
         return 0.0
-    cnt_area = cv2.contourArea(cnt)
+    pixel_area = float(cv2.countNonZero(component_mask))
     hull_area = cv2.contourArea(cv2.convexHull(cnt))
     if hull_area <= 0:
         return 0.0
-    return float(cnt_area / hull_area)
+    return float(pixel_area / hull_area)
 
 
 def _concavity_count(component_mask: np.ndarray, min_depth_px: float) -> int:

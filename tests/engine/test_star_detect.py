@@ -255,3 +255,31 @@ def test_burst_and_star_coexist():
     assert len(stars) == 2
     xs = sorted(round(s.x) for s in stars)
     assert abs(xs[0] - 150) <= 5 and abs(xs[1] - 400) <= 5
+
+
+def test_detects_small_real_world_burst():
+    """实测图纸里的爆炸图标只有 ~17x16 px、area ~115：典型小尺寸。
+    须在 close_kernel=0 通道命中（close=5 会把 spike 抹成圆斑）。"""
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    # 用 8 角 burst 在 r=8/r=4 模拟实际尺寸
+    _draw_burst(mask, 50, 50, 8, 4, n_spikes=8)
+    stars = detect_stars(mask)
+    assert len(stars) == 1
+    s = stars[0]
+    assert abs(s.x - 50) < 4 and abs(s.y - 50) < 4
+
+
+def test_ignores_huge_red_boundary_box():
+    """红色边界框包围一片区域：不能被 _fill_outline 填实成"巨型空心星"，
+    内部的真实星标也不能因此被吞掉。"""
+    mask = np.zeros((600, 800), dtype=np.uint8)
+    # 大边界框（粗线描）
+    cv2.rectangle(mask, (50, 50), (750, 550), 255, thickness=3)
+    # 内部放 2 颗五角星
+    _draw_filled_star(mask, 200, 300, 30, 13)
+    _draw_filled_star(mask, 500, 300, 30, 13)
+    stars = detect_stars(mask)
+    # 只能识别出 2 颗星；边界框应被 fill_max_bbox_area 拒绝填实
+    assert len(stars) == 2, f"边界框应被忽略，期望 2 颗星，实际 {len(stars)}"
+    xs = sorted(round(s.x) for s in stars)
+    assert abs(xs[0] - 200) <= 5 and abs(xs[1] - 500) <= 5

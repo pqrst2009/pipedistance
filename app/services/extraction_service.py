@@ -89,7 +89,9 @@ class ExtractionService:
         gmask_raw = green_mask(image_bgr, p.green)
         rmask = red_mask(image_bgr, p.red)
         gmask = clean_mask(gmask_raw, open_ksize=3, close_ksize=3, min_area=p.green_min_area)
-        rmask_clean = clean_mask(rmask, open_ksize=3, close_ksize=3, min_area=p.star.min_area)
+        # 红 mask 仅去单像素噪声，不做 open——open 会蚀掉爆炸图标的 spike 和小图标。
+        # detect_stars 内部已经做 close + fill_outline 的形状重建，且自带 min_area。
+        rmask_clean = clean_mask(rmask, open_ksize=0, close_ksize=0, min_area=0)
         stars = detect_stars(rmask_clean, p.star)
         star_centers = [(s.x, s.y) for s in stars]
 
