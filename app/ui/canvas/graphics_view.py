@@ -57,6 +57,9 @@ class DrawingView(QGraphicsView):
         self._calib_p1: QPointF | None = None
         self._calib_dot: QGraphicsEllipseItem | None = None
         self._calib_rubber: QGraphicsLineItem | None = None
+        # ScrollHandDrag 会抢走 left-press 启动平移，落在 movable item 上时
+        # 临时切到 NoDrag 让 item 接管；mouseRelease 时恢复。
+        self._dragmode_before_item: QGraphicsView.DragMode | None = None
 
     # ---- 图像 ----
     def load_pixmap(self, pixmap: QPixmap) -> None:
@@ -137,6 +140,13 @@ class DrawingView(QGraphicsView):
             self._ensure_rubber()
             self._rubber.setRect(QRectF(self._origin, self._origin))
             return
+        # 普通模式下，若 left-press 落在 movable item（失效点 / 折线顶点）上，
+        # 临时切 NoDrag 让 item 接管拖动；否则保持 ScrollHandDrag 平移。
+        if event.button() == Qt.LeftButton and self.dragMode() == QGraphicsView.ScrollHandDrag:
+            item = self.itemAt(event.position().toPoint())
+            if item is not None and (item.flags() & QGraphicsItem.ItemIsMovable):
+                self._dragmode_before_item = self.dragMode()
+                self.setDragMode(QGraphicsView.NoDrag)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
@@ -159,8 +169,16 @@ class DrawingView(QGraphicsView):
             rect = rect.intersected(bounds)
             if rect.width() > 3 and rect.height() > 3:
                 self.cropSelected.emit(rect)
+            # 仍要恢复可能的临时拖动模式
+            if self._dragmode_before_item is not None:
+                self.setDragMode(self._dragmode_before_item)
+                self._dragmode_before_item = None
             return
         super().mouseReleaseEvent(event)
+        # 普通模式下 press 时为 item 临时切了 NoDrag，在这里恢复
+        if self._dragmode_before_item is not None:
+            self.setDragMode(self._dragmode_before_item)
+            self._dragmode_before_item = None
 
     def _ensure_rubber(self) -> None:
         if self._rubber is None:
