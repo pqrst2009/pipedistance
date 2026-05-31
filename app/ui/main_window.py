@@ -43,10 +43,13 @@ PROJECT_FILTER = "图纸测距项目 (*.fdproj)"
 IMAGE_FILTER = "图纸 (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.pdf)"
 
 
+DEFAULT_WINDOW_TITLE = "离线图纸失效点测距软件 — MVP"
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("离线图纸失效点测距软件 — MVP")
+        self.setWindowTitle(DEFAULT_WINDOW_TITLE)
         self.resize(1280, 820)
 
         # 服务
@@ -159,6 +162,8 @@ class MainWindow(QMainWindow):
 
     # ---- 项目操作 ----
     def on_new(self):
+        # 先掐掉旧项目的后台 worker，避免 stale 结果回灌到新项目
+        self._detach_workers()
         try:
             self.project.new_project()
         except Exception as e:  # noqa: BLE001
@@ -172,12 +177,14 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "打开项目", "", PROJECT_FILTER)
         if not path:
             return
+        self._detach_workers()
         try:
             self.project.open_project(path)
         except Exception as e:  # noqa: BLE001
             self._error("打开项目失败", e)
             return
         self._reset_view()
+        self.setWindowTitle(f"离线图纸失效点测距软件 — {Path(path).name}")
         # 载入第一张图纸（若有）
         drawings = self.project.repo.get_drawings()
         if drawings:
@@ -599,11 +606,29 @@ class MainWindow(QMainWindow):
             self._calibration_ruler.remove()
             self._calibration_ruler = None
         self.ocr_panel.populate([])
-        self.measure_panel.populate([], None)
+        self.measure_panel.reset()
         self._per_pipeline_scale = []
         self._global_scale = None
         self._latest_measures = []
         self.act_crop.setChecked(False)
+        self.setWindowTitle(DEFAULT_WINDOW_TITLE)
+
+    def _detach_workers(self):
+        """掐断旧 worker 的信号连接：QThread 不能安全 terminate，但断信号能
+        让 stale 结果到达时直接丢弃，避免回灌到新项目。"""
+        for attr in ("_worker", "_extract_worker"):
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            try:
+                w.finished_ok.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            try:
+                w.failed.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+            setattr(self, attr, None)
 
     def _set_status(self, text: str):
         self.statusBar().showMessage(text)

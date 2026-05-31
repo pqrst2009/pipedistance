@@ -39,6 +39,12 @@ class MeasurePanel(QWidget):
     def set_summary(self, text: str) -> None:
         self._summary.setText(text)
 
+    def reset(self) -> None:
+        """新建/打开项目时回到初始空状态。"""
+        self.table.setRowCount(0)
+        self._title.setText("失效点距离表")
+        self._summary.setText("尚未提取。")
+
     def populate(self, measures: list, scale_m_per_px: float | None) -> None:
         self.table.setRowCount(0)
         for m in measures:
