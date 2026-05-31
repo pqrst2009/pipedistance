@@ -600,11 +600,14 @@ class MainWindow(QMainWindow):
         self.current_drawing = None
         self.current_image_bgr = None
         self.current_crop = None
-        self.view.clear()
+        # 顺序关键：先让 overlay / ruler 主动放下 QGraphicsItem，再 scene.clear()。
+        # 反过来会让 overlay 持有已被 Qt 删掉的 C++ 对象，下次访问 path.scene()
+        # 抛 RuntimeError 中断 _reset_view，结果就是再点新建+导入图纸无法显示。
         self.overlay.clear()
         if self._calibration_ruler is not None:
             self._calibration_ruler.remove()
             self._calibration_ruler = None
+        self.view.clear()
         self.ocr_panel.populate([])
         self.measure_panel.reset()
         self._per_pipeline_scale = []

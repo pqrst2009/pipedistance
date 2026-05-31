@@ -42,6 +42,16 @@ LABEL_OFFSET_Y = -STAR_OUTER - 18
 LABEL_PAD = 3
 
 
+def _safe_remove_from_scene(item, scene: QGraphicsScene) -> None:
+    """从 scene 移除 item，已被 Qt 删的 C++ wrapper 静默吞掉。"""
+    try:
+        if item.scene() is scene:
+            scene.removeItem(item)
+    except RuntimeError:
+        # "Internal C++ object already deleted" —— scene.clear() 已经吞了它
+        pass
+
+
 def _build_star_path(outer: float = STAR_OUTER, inner: float = STAR_INNER) -> QPainterPath:
     pts = []
     for k in range(10):
@@ -205,8 +215,7 @@ class CalibrationRuler:
 
     def remove(self) -> None:
         for item in self._items:
-            if item.scene() is self._scene:
-                self._scene.removeItem(item)
+            _safe_remove_from_scene(item, self._scene)
         self._items.clear()
 
 
@@ -270,20 +279,20 @@ class OverlayLayer(QObject):
 
     # ---- 内部 ----
     def _clear_pipelines(self) -> None:
+        # 上游可能已经 scene.clear() —— Qt 把 C++ 对象删了但 Python wrapper 还在，
+        # 任何方法调用都会 RuntimeError("Internal C++ object already deleted")。
+        # 这里只清字典，不再去碰可能已悬挂的 QGraphicsItem。
         for path in self._pipeline_paths.values():
-            if path.scene() is self._scene:
-                self._scene.removeItem(path)
+            _safe_remove_from_scene(path, self._scene)
         for handles in self._pipeline_handles.values():
             for h in handles:
-                if h.scene() is self._scene:
-                    self._scene.removeItem(h)
+                _safe_remove_from_scene(h, self._scene)
         self._pipeline_paths.clear()
         self._pipeline_handles.clear()
 
     def _clear_failure_points(self) -> None:
         for item in self._failure_items.values():
-            if item.scene() is self._scene:
-                self._scene.removeItem(item)
+            _safe_remove_from_scene(item, self._scene)
         self._failure_items.clear()
 
     def _on_vertex_moved(self, pipeline_id: str, vertex_index: int, x: float, y: float) -> None:
