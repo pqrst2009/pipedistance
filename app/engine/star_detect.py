@@ -84,16 +84,20 @@ class StarDetectParams:
     max_aspect_ratio: float = 1.35  # 单颗星 ≈ 1.0；> 1.35 推断为多星合体或文字
     # 空心星轮廓填实：先 close 再 drawContours FILLED。0 = 跳过（仅旧测试场景）
     fill_outline: bool = True
-    # 双通道 close kernel：大 kernel 抓空心五角星（线描有 AA 缝隙要桥接），
-    # 小 kernel(0) 抓白心红刺爆炸（任何 close 都会把 spike 抹平）。
-    # 两次检测后按中心距离去重，互不漏掉。
-    fill_close_kernels: tuple[int, ...] = (5, 0)
+    # 双通道 close kernel：小 kernel(0) 抓白心红刺爆炸 + 实心星真中心，
+    # 大 kernel(5) 抓需要 close 桥接 outline 的空心五角星。
+    # **顺序很重要**：先 0 后 5，dedup 按 FIFO，真中心优先于 close 引入的"中点峰"
+    # （重叠星被 close=5 融成长条 → 距离变换峰落在两星之间）。
+    fill_close_kernels: tuple[int, ...] = (0, 5)
     # 轮廓 bbox 面积超过此值时**不**填实——避免把红色边界框 / 大面积红色
     # 阴影当成"巨型空心星"填满，吞掉里面真正的失效点。
     # 经验：单颗星的 bbox 上限 ~ max_area * 4（含星尖之间的空角）。
     fill_max_bbox_area: int = 200000
-    # 两通道结果去重半径（像素）：两通道命中位置距离 ≤ 此值视为同一颗
-    dedup_radius_px: float = 10.0
+    # 两通道结果去重半径（像素）：两通道命中位置距离 ≤ 此值视为同一颗。
+    # 实测 close=5 通道在重叠星合体上产生"中点伪峰"距真中心 ~15.13 px，
+    # 需要 ≥ 16 才能吃掉。相邻独立失效点的中心距图纸里典型 ≥ 25 px，
+    # 仍能安全保留。
+    dedup_radius_px: float = 16.0
     # solidity = contourArea / hullArea；五角星 ≈ 0.45-0.80，圆/数字 ≈ ≥0.85
     use_solidity: bool = True
     min_solidity: float = 0.30
@@ -107,7 +111,9 @@ class StarDetectParams:
     concavity_profiles: tuple[tuple[int, int], ...] = ((5, 1), (10, 3))
     # 重叠星分离：单连通域的形状像"多星合体"时，用距离变换峰值切分
     split_overlapping: bool = True
-    peak_min_distance: int = 12       # 相邻星中心最少像素间距
+    # 相邻星中心最少像素间距。实测：单孤立星 r∈[22,80] 在 md∈[4,8] 都只给 1 个峰，
+    # 把 md 降到 6 才能分离三连重叠星（中心距 25）。再大就会漏 3 颗中的第 3 颗。
+    peak_min_distance: int = 6
     peak_min_radius_px: float = 4.0   # 峰值高度（星内接圆半径下限），过滤文字
     # 进入拆分分支的门槛（小连通域 / 过实心 / 太瘦长的形状不会被误拆为多星）
     min_split_area: int = 1200         # 多星合体的连通域面积下限（避开"3.5"等文字合体）
@@ -234,14 +240,16 @@ def _detect_once(
 
 
 def _dedup_centers(hits: list[StarCenter], radius_px: float) -> list[StarCenter]:
-    """按中心距离去重：两次通道命中相互覆盖时合并成同一颗，保留面积更大的。"""
+    """按中心距离去重：FIFO，先到先得。
+
+    调用方负责把"更可信"的通道排在前面 —— 当前 detect_stars 把 close=0 通道
+    排在第一，所以重叠星的真中心优先，close=5 引入的"中点伪峰"被丢弃。
+    """
     if not hits:
         return []
-    # 按面积降序，让"更可信"（更大 silhouette = 通道 1 抓到的填实星）先入库
-    sorted_hits = sorted(hits, key=lambda s: s.area, reverse=True)
     kept: list[StarCenter] = []
     r2 = radius_px * radius_px
-    for s in sorted_hits:
+    for s in hits:
         ok = True
         for k in kept:
             dx, dy = s.x - k.x, s.y - k.y
@@ -250,6 +258,8 @@ def _dedup_centers(hits: list[StarCenter], radius_px: float) -> list[StarCenter]
                 break
         if ok:
             kept.append(s)
+    # 最终结果按面积降序，保持 API 兼容
+    kept.sort(key=lambda s: s.area, reverse=True)
     return kept
 
 
@@ -318,7 +328,46 @@ def _split_by_distance_peaks(
     out: list[tuple[float, float, float]] = []
     for (py, px) in coords:
         out.append((float(px), float(py), float(dist[py, px])))
-    return out
+    return _drop_midpoint_peaks(out)
+
+
+def _drop_midpoint_peaks(
+    peaks: list[tuple[float, float, float]],
+    height_margin: float = 0.5,
+) -> list[tuple[float, float, float]]:
+    """剔除"中点伪峰"——两颗重叠星合体后距离变换在中点处会升高（因覆盖区域比
+    单颗星更宽），生成一个比两端真中心都高的虚假峰。
+
+    规则：峰 P 若被另外两峰 Q, R 夹在中间（向量 PQ·PR 为正）且 P 的 inscribed
+    radius **严格高于**两端 + ``height_margin``，判为伪峰丢弃。
+
+    真三连/四连等密叠场景里中间峰高度与两端相近或更低，不会被误删。
+    """
+    if len(peaks) < 3:
+        return peaks
+    drop = [False] * len(peaks)
+    for i, (xi, yi, ri) in enumerate(peaks):
+        if drop[i]:
+            continue
+        for j in range(len(peaks)):
+            if j == i or drop[j]:
+                continue
+            for k in range(j + 1, len(peaks)):
+                if k == i or drop[k]:
+                    continue
+                xj, yj, rj = peaks[j]
+                xk, yk, rk = peaks[k]
+                # i 是否落在 j-k 连线之间（向量同向）
+                v1x, v1y = xi - xj, yi - yj
+                v2x, v2y = xk - xi, yk - yi
+                if v1x * v2x + v1y * v2y <= 0:
+                    continue
+                if ri > rj + height_margin and ri > rk + height_margin:
+                    drop[i] = True
+                    break
+            if drop[i]:
+                break
+    return [p for p, d in zip(peaks, drop) if not d]
 
 
 def _fill_outline(mask: np.ndarray, close_kernel: int,

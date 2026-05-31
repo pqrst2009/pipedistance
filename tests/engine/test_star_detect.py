@@ -269,6 +269,40 @@ def test_detects_small_real_world_burst():
     assert abs(s.x - 50) < 4 and abs(s.y - 50) < 4
 
 
+def test_detects_three_stacked_overlapping_solid_stars():
+    """三颗实心五角星对角紧叠（中心距 ≈ outer_radius），三颗都要识别。
+
+    旧版 peak_min_distance=12 让中间峰被淘汰只剩 2 颗；
+    现在 md=6 + 中点伪峰剔除 应识别全部 3 颗。"""
+    for dy in (20, 25, 30, 35, 40):
+        mask = np.zeros((300, 200), dtype=np.uint8)
+        for cx, cy in [(100, 100), (115, 100 + dy), (130, 100 + 2 * dy)]:
+            pts = []
+            for k in range(10):
+                angle = -math.pi / 2 + k * math.pi / 5
+                r = 30 if k % 2 == 0 else 13
+                pts.append((int(cx + r * math.cos(angle)),
+                            int(cy + r * math.sin(angle))))
+            cv2.fillPoly(mask, [np.array(pts, dtype=np.int32)], 255)
+        stars = detect_stars(mask)
+        assert len(stars) == 3, f"dy={dy}: 期望 3 颗，实际 {len(stars)}"
+
+
+def test_drop_midpoint_does_not_kill_true_three_in_a_row():
+    """密叠 3 颗各自的距离峰高度相近，不应被"中点伪峰剔除"误删中间那颗。"""
+    from app.engine.star_detect import _drop_midpoint_peaks
+    # 3 个真实星峰：相邻 r 差异 ≤ 0.5
+    peaks = [(100.0, 100.0, 16.4), (115.0, 125.0, 16.4), (129.0, 149.0, 14.0)]
+    kept = _drop_midpoint_peaks(peaks)
+    assert len(kept) == 3
+    # 2 个真星 + 1 个伪中点：中点 r 严格 >> 两端
+    peaks = [(180.0, 150.0, 15.0), (195.0, 154.0, 17.0), (209.0, 150.0, 15.18)]
+    kept = _drop_midpoint_peaks(peaks)
+    assert len(kept) == 2
+    coords = {(round(p[0]), round(p[1])) for p in kept}
+    assert (180, 150) in coords and (209, 150) in coords
+
+
 def test_ignores_huge_red_boundary_box():
     """红色边界框包围一片区域：不能被 _fill_outline 填实成"巨型空心星"，
     内部的真实星标也不能因此被吞掉。"""
