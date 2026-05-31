@@ -74,9 +74,8 @@ HIDDEN_IMPORTS += collect_submodules("openpyxl")
 # 排除明确用不到的大型模块，缩小体积
 EXCLUDES = [
     "tkinter",
-    "unittest",
-    "test",
-    "pytest",
+    # 注意：不要排除 unittest / test —— skimage / scipy 等科学库会偷偷 import
+    # unittest 做类型断言，排掉它运行时会 ModuleNotFoundError
     # PySide6 用不到的子模块
     "PySide6.QtWebEngineCore",
     "PySide6.QtWebEngineWidgets",
