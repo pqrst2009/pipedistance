@@ -55,6 +55,26 @@ except Exception:
 # 顺手把 openpyxl 全子模块带上（写 xlsx 走 lxml.etree 等不同分支）
 HIDDEN_IMPORTS += collect_submodules("openpyxl")
 
+# skimage / scipy 的 lazy import 经常漏 _xxx 私有 C 扩展，collect_all 名义上抓全
+# 但 PyInstaller 在 Windows 上对 lazy_loader 的分析不稳，补一遍 collect_submodules
+# 兜底。peak_local_max 走 skimage.feature.peak + scipy.ndimage._filters，
+# 漏任意一个 Windows 上就静默退化（多颗合体星无法拆分）。
+HIDDEN_IMPORTS += collect_submodules("skimage")
+HIDDEN_IMPORTS += collect_submodules("scipy.ndimage")
+HIDDEN_IMPORTS += collect_submodules("scipy.spatial")
+HIDDEN_IMPORTS += [
+    "skimage.feature",
+    "skimage.feature.peak",
+    "skimage._shared",
+    "skimage._shared.utils",
+    "skimage._shared.coord",
+    "scipy.ndimage._filters",
+    "scipy.ndimage._morphology",
+    "scipy.ndimage._measurements",
+    "scipy.spatial.distance",
+    "scipy.spatial._ckdtree",
+]
+
 # PySide6 的关键子模块（PyInstaller 内置 hook 通常会处理，列出以防）
 HIDDEN_IMPORTS += [
     "PySide6.QtCore",

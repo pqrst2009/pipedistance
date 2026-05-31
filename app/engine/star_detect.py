@@ -17,11 +17,55 @@
 """
 from __future__ import annotations
 
+import os
+import sys
+import traceback
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
 from skimage.feature import peak_local_max
+
+
+# 诊断日志：Windows 打包后 peak_local_max 静默退化会导致多颗合体星无法拆分，
+# 把异常 / 关键模块版本写到用户目录，方便远程排查。
+# 仅在异常路径和模块首次加载时写，正常运行不产生 I/O。
+_DIAG_LOG = Path(os.environ.get("PIPEDISTANCE_DIAG_LOG") or
+                 (Path.home() / "pipedistance_diag.log"))
+
+
+def _diag_write(msg: str) -> None:
+    try:
+        with _DIAG_LOG.open("a", encoding="utf-8") as f:
+            f.write(msg.rstrip() + "\n")
+    except Exception:
+        # 诊断本身不能抛错影响主流程
+        pass
+
+
+def _diag_probe_once() -> None:
+    """模块加载时跑一次 peak_local_max 自检，记录版本和探针结果。"""
+    try:
+        import skimage
+        import scipy
+        probe = np.zeros((9, 9), dtype=np.float32)
+        probe[4, 4] = 5.0
+        coords = peak_local_max(probe, min_distance=1, threshold_abs=1.0)
+        _diag_write(
+            f"[probe] platform={sys.platform} frozen={getattr(sys, 'frozen', False)} "
+            f"skimage={skimage.__version__} scipy={scipy.__version__} "
+            f"cv2={cv2.__version__} numpy={np.__version__} "
+            f"probe_peaks={len(coords)}"
+        )
+    except Exception:
+        _diag_write(
+            f"[probe] platform={sys.platform} frozen={getattr(sys, 'frozen', False)} "
+            f"FAILED:\n{traceback.format_exc()}"
+        )
+
+
+_diag_probe_once()
 
 
 @dataclass(frozen=True)
@@ -197,12 +241,22 @@ def _split_by_distance_peaks(
     返回 [(x, y, peak_radius_px), ...]。
     """
     dist = cv2.distanceTransform(component_mask, cv2.DIST_L2, 5)
-    coords = peak_local_max(
-        dist,
-        min_distance=min_distance,
-        threshold_abs=min_height,
-        exclude_border=False,
-    )
+    try:
+        coords = peak_local_max(
+            dist,
+            min_distance=min_distance,
+            threshold_abs=min_height,
+            exclude_border=False,
+        )
+    except Exception:
+        # Windows 打包后 skimage / scipy 子模块缺失会在这里抛 ImportError / AttributeError，
+        # 落盘后退化为「只走质心 + 单星形状校验」分支，至少独立星仍能识别。
+        _diag_write(
+            f"[peak_local_max] FAILED mask_shape={component_mask.shape} "
+            f"min_distance={min_distance} min_height={min_height}\n"
+            f"{traceback.format_exc()}"
+        )
+        return []
     out: list[tuple[float, float, float]] = []
     for (py, px) in coords:
         out.append((float(px), float(py), float(dist[py, px])))
