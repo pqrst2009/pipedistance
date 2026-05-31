@@ -76,6 +76,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.view)
         self.view.cropSelected.connect(self._on_crop_selected)
         self.view.calibrationCompleted.connect(self._on_calibration_completed)
+        self.view.addFailurePointRequested.connect(self._on_add_failure_clicked)
         self.overlay = OverlayLayer(self.view.scene())
         self.overlay.model_changed.connect(self._on_overlay_edited)
 
@@ -123,6 +124,8 @@ class MainWindow(QMainWindow):
                                    triggered=self.on_run_extraction)
         self.act_calibrate = QAction("手动标定（点两点）", self, checkable=True,
                                      triggered=self.on_toggle_calibrate)
+        self.act_add_failure = QAction("手动添加失效点", self, checkable=True,
+                                       triggered=self.on_toggle_add_failure)
         self.act_export = QAction("导出 Excel…", self, triggered=self.on_export_xlsx)
         self.act_clear_overlay = QAction("清除叠加层", self,
                                         triggered=self.on_clear_overlay)
@@ -137,7 +140,8 @@ class MainWindow(QMainWindow):
 
         for a in (self.act_new, self.act_open, self.act_save, self.act_import,
                   self.act_crop, self.act_uncrop, self.act_ocr, self.act_extract,
-                  self.act_calibrate, self.act_export, self.act_clear_overlay):
+                  self.act_calibrate, self.act_add_failure,
+                  self.act_export, self.act_clear_overlay):
             tb.addAction(a)
 
     def _update_actions_enabled(self):
@@ -155,6 +159,7 @@ class MainWindow(QMainWindow):
         self.act_ocr.setEnabled(has_img)
         self.act_extract.setEnabled(has_img)
         self.act_calibrate.setEnabled(has_img)
+        self.act_add_failure.setEnabled(has_img)
         self.act_export.setEnabled(
             has_img and bool(self.overlay.failure_points)
         )
@@ -488,6 +493,46 @@ class MainWindow(QMainWindow):
         else:
             self._set_status("已退出手动标定。")
 
+    def on_toggle_add_failure(self, checked: bool):
+        self.view.set_add_failure_mode(checked)
+        if checked:
+            self._set_status(
+                "添加失效点模式：每次在画布上点击都会落下一颗带编号的红五角星，"
+                "可直接拖动调整位置。再次点击工具栏按钮（或按 Esc）退出。"
+            )
+        else:
+            self._set_status("已退出手动添加失效点。")
+
+    def _on_add_failure_clicked(self, pt: QPointF):
+        if self.current_drawing is None:
+            return
+        self.overlay.add_failure_point(
+            self.current_drawing.id, float(pt.x()), float(pt.y())
+        )
+        # 添加后距离重算靠 overlay.model_changed → _on_overlay_edited 自动跑
+
+    def keyPressEvent(self, event):
+        # Esc 退出手动添加 / 标定模式
+        if event.key() == Qt.Key_Escape:
+            if self.act_add_failure.isChecked():
+                self.act_add_failure.setChecked(False)
+                self.on_toggle_add_failure(False)
+                return
+            if self.act_calibrate.isChecked():
+                self.act_calibrate.setChecked(False)
+                self.on_toggle_calibrate(False)
+                return
+        # Delete / Backspace 删除选中的失效点
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            selected = self.overlay.selected_failure_ids()
+            if selected:
+                for fid in selected:
+                    self.overlay.remove_failure_point(fid)
+                self._set_status(f"已删除 {len(selected)} 个失效点。")
+                self._update_actions_enabled()
+                return
+        super().keyPressEvent(event)
+
     def _on_calibration_completed(self, p1: QPointF, p2: QPointF):
         dx, dy = p2.x() - p1.x(), p2.y() - p1.y()
         pixel_dist = (dx * dx + dy * dy) ** 0.5
@@ -614,6 +659,10 @@ class MainWindow(QMainWindow):
         self._global_scale = None
         self._latest_measures = []
         self.act_crop.setChecked(False)
+        self.act_calibrate.setChecked(False)
+        self.act_add_failure.setChecked(False)
+        self.view.set_calibrate_mode(False)
+        self.view.set_add_failure_mode(False)
         self.setWindowTitle(DEFAULT_WINDOW_TITLE)
 
     def _detach_workers(self):

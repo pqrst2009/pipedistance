@@ -262,6 +262,56 @@ class OverlayLayer(QObject):
             self._scene.addItem(item)
             self._failure_items[fp.id] = item
 
+    def add_failure_point(self, drawing_id: str, x: float, y: float) -> str:
+        """手动新增一颗失效点：编号取现有最大 F# + 1，写入模型、加到 scene、
+        发 model_changed 触发距离重算。返回新 fp 的 id。"""
+        from app.domain.models import FailurePoint, ReviewState, new_id
+        max_n = 0
+        for fp in self._failure_points:
+            if fp.code and len(fp.code) > 1 and fp.code[0] == "F":
+                try:
+                    max_n = max(max_n, int(fp.code[1:]))
+                except ValueError:
+                    pass
+        code = f"F{max_n + 1}"
+        fp = FailurePoint(
+            id=new_id("fp_"),
+            drawing_id=drawing_id,
+            code=code,
+            raw_px=(float(x), float(y)),
+            projected_px=None,
+            pipeline_id=None,
+            offset_px=None,
+            marker_type="manual",
+            confidence=1.0,
+            state=ReviewState.AUTO,
+        )
+        self._failure_points.append(fp)
+        item = _FailurePointItem(code, x, y, self, fp.id)
+        self._scene.addItem(item)
+        self._failure_items[fp.id] = item
+        self.model_changed.emit()
+        return fp.id
+
+    def remove_failure_point(self, fp_id: str) -> bool:
+        """删除一颗失效点（含 scene item + 模型副本）。返回是否真的删了。"""
+        idx = next(
+            (i for i, fp in enumerate(self._failure_points) if fp.id == fp_id),
+            -1,
+        )
+        if idx < 0:
+            return False
+        self._failure_points.pop(idx)
+        item = self._failure_items.pop(fp_id, None)
+        if item is not None:
+            _safe_remove_from_scene(item, self._scene)
+        self.model_changed.emit()
+        return True
+
+    def selected_failure_ids(self) -> list[str]:
+        """当前 scene 中被选中的失效点 id。供 Delete 键删除使用。"""
+        return [fid for fid, item in self._failure_items.items() if item.isSelected()]
+
     def clear(self) -> None:
         self._clear_pipelines()
         self._clear_failure_points()

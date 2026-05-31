@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 class DrawingView(QGraphicsView):
     cropSelected = Signal(QRectF)            # 图像像素坐标系下的矩形
     calibrationCompleted = Signal(QPointF, QPointF)  # 两点都落地后发：(p1, p2)
+    addFailurePointRequested = Signal(QPointF)  # 手动添加失效点：图像像素坐标
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,6 +50,7 @@ class DrawingView(QGraphicsView):
         self._pixmap_item: QGraphicsPixmapItem | None = None
         self._crop_mode = False
         self._calibrate_mode = False
+        self._add_failure_mode = False
         self._rubber: QGraphicsRectItem | None = None
         self._origin: QPointF | None = None
         # 标定中间状态：第一点坐标 + 视觉指示
@@ -79,6 +81,12 @@ class DrawingView(QGraphicsView):
         self.setDragMode(QGraphicsView.NoDrag if on else QGraphicsView.ScrollHandDrag)
         self.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
 
+    # ---- 手动添加失效点：单次点击落星 ----
+    def set_add_failure_mode(self, on: bool) -> None:
+        self._add_failure_mode = on
+        self.setDragMode(QGraphicsView.NoDrag if on else QGraphicsView.ScrollHandDrag)
+        self.setCursor(Qt.CrossCursor if on else Qt.ArrowCursor)
+
     # ---- 手动标定模式：两次点击 + 橡皮筋预览 ----
     def set_calibrate_mode(self, on: bool) -> None:
         self._calibrate_mode = on
@@ -105,6 +113,12 @@ class DrawingView(QGraphicsView):
 
     # ---- 裁剪交互 ----
     def mousePressEvent(self, event) -> None:
+        if self._add_failure_mode and event.button() == Qt.LeftButton and self._pixmap_item:
+            p = self.mapToScene(event.position().toPoint())
+            # 只在图像范围内才发信号，避免在画布空白区点击造成误添加
+            if self._scene.sceneRect().contains(p):
+                self.addFailurePointRequested.emit(p)
+            return
         if self._calibrate_mode and event.button() == Qt.LeftButton and self._pixmap_item:
             p = self.mapToScene(event.position().toPoint())
             if self._calib_p1 is None:
