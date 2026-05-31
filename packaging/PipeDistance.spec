@@ -9,7 +9,12 @@
 """
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 
 
 ROOT = Path(SPECPATH).parent.resolve()
@@ -23,11 +28,6 @@ HIDDEN_IMPORTS = [
     "onnxruntime",
     "onnxruntime.capi",
     "onnxruntime.capi._pybind_state",
-    # scikit-image: peak_local_max 间接依赖
-    "skimage.feature",
-    "skimage.morphology",
-    "scipy.ndimage",
-    "scipy.spatial",
     # shapely
     "shapely",
     "shapely.geometry",
@@ -59,6 +59,17 @@ except Exception:
 
 # onnxruntime 的动态库（DLL/SO/dylib）
 BINARIES = collect_dynamic_libs("onnxruntime")
+
+# scikit-image / scipy：整个包都收（用了 skeletonize、peak_local_max 等
+# 间接通过 lazy 加载触发的子模块；如果只点名 skimage.feature 会漏一堆）
+for pkg in ("skimage", "scipy"):
+    pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+    DATAS += pkg_datas
+    BINARIES += pkg_binaries
+    HIDDEN_IMPORTS += pkg_hidden
+
+# 顺手把 openpyxl 全子模块也带上（写 xlsx 走 lxml.etree 等不同分支）
+HIDDEN_IMPORTS += collect_submodules("openpyxl")
 
 # 排除明确用不到的大型模块，缩小体积
 EXCLUDES = [
