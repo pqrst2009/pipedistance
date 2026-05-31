@@ -8,3 +8,5 @@ __pycache__/
 build/
 dist/
 *.fdproj
+# 本地导出的测距结果样品，不入库
+*.xlsx
