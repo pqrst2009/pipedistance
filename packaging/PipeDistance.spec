@@ -20,56 +20,47 @@ from PyInstaller.utils.hooks import (
 ROOT = Path(SPECPATH).parent.resolve()
 APP_NAME = "PipeDistance"
 
-# 显式列出 PyInstaller 静态分析可能漏掉的隐式导入
-HIDDEN_IMPORTS = [
-    # OCR
-    "rapidocr",
-    "rapidocr.main",
-    "onnxruntime",
-    "onnxruntime.capi",
-    "onnxruntime.capi._pybind_state",
-    # shapely
-    "shapely",
-    "shapely.geometry",
-    "shapely.ops",
-    # PIL
-    "PIL._imaging",
-    "PIL.Image",
-    # PySide6 主要子模块（Analysis 一般能找到，列出以防）
-    "PySide6.QtCore",
-    "PySide6.QtGui",
-    "PySide6.QtWidgets",
-    # Excel
-    "openpyxl",
-    "openpyxl.workbook",
-]
-
-# 资源文件
-DATAS = [
+# 主依赖一律 collect_all 抓全（子模块 + 数据文件 + C 动态库），
+# 避免点名遗漏：
+#   - shapely 内部 GEOS C 库
+#   - PIL/Pillow 各种 _imaging / _imagingft 扩展
+#   - PyMuPDF (fitz) C 扩展 + 字体资源
+#   - skimage / scipy 海量懒加载子模块
+#   - openpyxl 各种可选写入后端
+HIDDEN_IMPORTS: list[str] = []
+DATAS: list[tuple[str, str]] = [
     (str(ROOT / "app" / "persistence" / "schema.sql"), "app/persistence"),
 ]
+BINARIES: list[tuple[str, str]] = []
 
-# rapidocr 自带模型 / 字典 / 配置（含首次运行后下载到 site-packages 的 onnx）
-DATAS += collect_data_files("rapidocr")
-# rapidocr_onnxruntime 兼容包（旧 API）若装了，也带上
+for pkg in ("skimage", "scipy", "shapely", "PIL", "fitz", "rapidocr", "onnxruntime"):
+    try:
+        pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
+        DATAS += pkg_datas
+        BINARIES += pkg_binaries
+        HIDDEN_IMPORTS += pkg_hidden
+    except Exception as e:
+        # 某些包（如可选的 rapidocr_onnxruntime）可能未安装，跳过即可
+        print(f"[spec] collect_all({pkg!r}) skipped: {e}")
+
+# 兼容包（旧 rapidocr_onnxruntime API），装了就一起带
 try:
-    DATAS += collect_data_files("rapidocr_onnxruntime")
+    rdo_datas, rdo_binaries, rdo_hidden = collect_all("rapidocr_onnxruntime")
+    DATAS += rdo_datas
+    BINARIES += rdo_binaries
+    HIDDEN_IMPORTS += rdo_hidden
 except Exception:
     pass
 
-# onnxruntime 的动态库（DLL/SO/dylib）
-BINARIES = collect_dynamic_libs("onnxruntime")
-
-# scikit-image / scipy：整个包都收（用了 skeletonize、peak_local_max 等
-# 间接通过 lazy 加载触发的子模块；如果只点名 skimage.feature 会漏一堆）
-for pkg in ("skimage", "scipy"):
-    pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
-    DATAS += pkg_datas
-    BINARIES += pkg_binaries
-    HIDDEN_IMPORTS += pkg_hidden
-
-# 顺手把 openpyxl 全子模块也带上（写 xlsx 走 lxml.etree 等不同分支）
+# 顺手把 openpyxl 全子模块带上（写 xlsx 走 lxml.etree 等不同分支）
 HIDDEN_IMPORTS += collect_submodules("openpyxl")
+
+# PySide6 的关键子模块（PyInstaller 内置 hook 通常会处理，列出以防）
+HIDDEN_IMPORTS += [
+    "PySide6.QtCore",
+    "PySide6.QtGui",
+    "PySide6.QtWidgets",
+]
 
 # 排除明确用不到的大型模块，缩小体积
 EXCLUDES = [
