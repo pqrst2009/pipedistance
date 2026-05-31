@@ -19,6 +19,17 @@ def _draw_filled_star(img_mask: np.ndarray, cx: int, cy: int, r_outer: int, r_in
     cv2.fillPoly(img_mask, [np.array(pts, dtype=np.int32)], 255)
 
 
+def _draw_burst(img_mask: np.ndarray, cx: int, cy: int,
+                r_outer: int, r_inner: int, n_spikes: int = 10) -> None:
+    """合成"多角爆炸"标记（白心实心红刺图标的实心版本）。"""
+    pts = []
+    for k in range(2 * n_spikes):
+        angle = -math.pi / 2 + k * math.pi / n_spikes
+        r = r_outer if k % 2 == 0 else r_inner
+        pts.append((int(cx + r * math.cos(angle)), int(cy + r * math.sin(angle))))
+    cv2.fillPoly(img_mask, [np.array(pts, dtype=np.int32)], 255)
+
+
 def test_detects_single_star():
     mask = np.zeros((300, 300), dtype=np.uint8)
     _draw_filled_star(mask, 150, 150, 40, 18)
@@ -191,3 +202,56 @@ def test_area_filter():
     stars = detect_stars(mask, StarDetectParams(min_area=200))
     assert len(stars) == 1
     assert abs(stars[0].x - 300) < 3
+
+
+def test_detects_burst_solid():
+    """10 角实心爆炸图标（"扎啊"形）：与五角星共存的失效点标记。"""
+    mask = np.zeros((300, 300), dtype=np.uint8)
+    _draw_burst(mask, 150, 150, 50, 25, n_spikes=10)
+    stars = detect_stars(mask)
+    assert len(stars) == 1
+    s = stars[0]
+    assert abs(s.x - 150) < 4 and abs(s.y - 150) < 4
+    # 爆炸应命中 (10±3) 档案
+    assert 7 <= s.concavity_count <= 13
+
+
+def test_detects_burst_hollow_white_center():
+    """白心红刺爆炸：填实步骤把白心补上后，silhouette 与实心爆炸一致。"""
+    mask = np.zeros((300, 300), dtype=np.uint8)
+    _draw_burst(mask, 150, 150, 50, 25, n_spikes=10)
+    cv2.circle(mask, (150, 150), 12, 0, thickness=-1)
+    stars = detect_stars(mask)
+    assert len(stars) == 1
+    s = stars[0]
+    assert abs(s.x - 150) < 4 and abs(s.y - 150) < 4
+
+
+def test_detects_burst_with_8_spikes():
+    """爆炸 spike 数有波动 (8-12)，档案 (10±3) 应覆盖 8 角。"""
+    mask = np.zeros((300, 300), dtype=np.uint8)
+    _draw_burst(mask, 150, 150, 50, 25, n_spikes=8)
+    stars = detect_stars(mask)
+    assert len(stars) == 1
+
+
+def test_detects_large_solid_star():
+    """大尺寸实心红五角星（图纸里偶尔出现 r≈100 的规格）。"""
+    mask = np.zeros((400, 400), dtype=np.uint8)
+    _draw_filled_star(mask, 200, 200, 100, 45)
+    stars = detect_stars(mask)
+    assert len(stars) == 1
+    s = stars[0]
+    assert abs(s.x - 200) < 5 and abs(s.y - 200) < 5
+    assert s.concavity_count == 5
+
+
+def test_burst_and_star_coexist():
+    """同一张图里五角星和爆炸混存：都要识别出来。"""
+    mask = np.zeros((400, 600), dtype=np.uint8)
+    _draw_filled_star(mask, 150, 200, 40, 18)
+    _draw_burst(mask, 400, 200, 50, 25, n_spikes=10)
+    stars = detect_stars(mask)
+    assert len(stars) == 2
+    xs = sorted(round(s.x) for s in stars)
+    assert abs(xs[0] - 150) <= 5 and abs(xs[1] - 400) <= 5

@@ -89,11 +89,13 @@ class StarDetectParams:
     use_solidity: bool = True
     min_solidity: float = 0.30
     max_solidity: float = 0.85
-    # 凸缺陷数 ≈ 5
+    # 形状档案：每条 (target_concavity, tolerance) 都接受。默认覆盖：
+    #   - 五角星 (5±1) ：图纸上常见的红色五角星（空心或实心）
+    #   - 多角爆炸 (10±3) ：白心红刺的"扎啊/爆炸"图标，spike 数 7-13 都算
+    # 凸缺陷数 ≥ 14 仍可能是多星合体或文字噪声，留给 split_overlapping 兜底。
     use_concavity: bool = True
     min_concavity: float = 2.0       # 凸缺陷深度阈值（像素）
-    target_concavity: int = 5
-    concavity_tolerance: int = 1   # 单星 4-6；7+ 推断为多星合体
+    concavity_profiles: tuple[tuple[int, int], ...] = ((5, 1), (10, 3))
     # 重叠星分离：单连通域的形状像"多星合体"时，用距离变换峰值切分
     split_overlapping: bool = True
     peak_min_distance: int = 12       # 相邻星中心最少像素间距
@@ -164,7 +166,7 @@ def detect_stars(red_mask: np.ndarray, params: StarDetectParams | None = None) -
         )
         passes_concavity = (
             not p.use_concavity
-            or abs(conc - p.target_concavity) <= p.concavity_tolerance
+            or any(abs(conc - t) <= tol for t, tol in p.concavity_profiles)
         )
         if passes_aspect and passes_solidity and passes_concavity:
             results.append(
