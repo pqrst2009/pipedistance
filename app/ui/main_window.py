@@ -571,7 +571,9 @@ class MainWindow(QMainWindow):
     def _on_overlay_edited(self):
         pipelines = self.overlay.pipelines
         failures = self.overlay.failure_points
-        if not pipelines or not failures:
+        # 只有"完全没失效点"才清表；没识别出管线也要给两两直线距离，否则
+        # 手动加一颗后，原本自动识别的失效点对子距离都会被一并清掉。
+        if not failures:
             self.measure_panel.populate([], self._global_scale)
             return
         polylines = [p.points_px for p in pipelines]

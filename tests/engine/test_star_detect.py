@@ -303,6 +303,33 @@ def test_drop_midpoint_does_not_kill_true_three_in_a_row():
     assert (180, 150) in coords and (209, 150) in coords
 
 
+def test_small_two_stars_pair_split_via_major_axis():
+    """小尺寸图纸里两颗紧贴的实心星：bbox ≈ 47×33（aspect 1.42），距离变换
+    只给 1 个峰但形状是星型。主轴兜底（aspect 上限 1.7）应拆成 2 颗。"""
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    # r=12 的两颗星紧贴
+    for cx, cy in [(35, 50), (60, 50)]:
+        pts = []
+        for k in range(10):
+            angle = -math.pi / 2 + k * math.pi / 5
+            r = 14 if k % 2 == 0 else 6
+            pts.append((int(cx + r * math.cos(angle)),
+                        int(cy + r * math.sin(angle))))
+        cv2.fillPoly(mask, [np.array(pts, dtype=np.int32)], 255)
+    stars = detect_stars(mask)
+    assert len(stars) == 2, f"小尺寸合体星应拆成 2，实际 {len(stars)}"
+
+
+def test_rejects_text_via_axis_split_aspect_gate():
+    """长条文字"P3.5"（aspect ≈ 1.97 > 1.7 上限）即便 area ≥ min_split_area，
+    也不应被主轴兜底误识别成 2 颗星。"""
+    mask = np.zeros((200, 400), dtype=np.uint8)
+    cv2.putText(mask, "P3.5", (50, 100), cv2.FONT_HERSHEY_SIMPLEX,
+                1.2, 255, 2, cv2.LINE_AA)
+    stars = detect_stars(mask)
+    assert stars == [], f"长条文字应被 aspect 上限挡掉，实际 {len(stars)}"
+
+
 def test_ignores_huge_red_boundary_box():
     """红色边界框包围一片区域：不能被 _fill_outline 填实成"巨型空心星"，
     内部的真实星标也不能因此被吞掉。"""

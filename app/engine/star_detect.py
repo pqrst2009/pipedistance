@@ -115,11 +115,19 @@ class StarDetectParams:
     # 把 md 降到 6 才能分离三连重叠星（中心距 25）。再大就会漏 3 颗中的第 3 颗。
     peak_min_distance: int = 6
     peak_min_radius_px: float = 4.0   # 峰值高度（星内接圆半径下限），过滤文字
-    # 进入拆分分支的门槛（小连通域 / 过实心 / 太瘦长的形状不会被误拆为多星）
-    min_split_area: int = 1200         # 多星合体的连通域面积下限（避开"3.5"等文字合体）
+    # 进入拆分分支的门槛（小连通域 / 过实心 / 太瘦长的形状不会被误拆为多星）。
+    # 小尺寸图纸里单颗星 area ≈ 300，两颗合体 ≈ 600，三颗合体 ≈ 900。
+    # 设 400 让小图也能进拆分；文字合体（如 "3.5"）area 通常 < 200，由 split_min_solidity
+    # 和 _drop_midpoint_peaks 双重兜底。
+    min_split_area: int = 400
     # 连通域整体守门 solidity：低于此值不进入任何检测路径（含拆分），
     # 用于挡掉巨型边界框 / 大块线描的 hollow ring（solidity 通常 <0.15）。
     split_min_solidity: float = 0.20
+    # 主轴拆分兜底（unimodal overlap 时距离变换只给 1 个峰，但形状像 2 颗
+    # 紧挨的星）：要求 solidity / concavity 已经是星型，且 aspect 在窄带
+    # [1.35, axis_split_max_aspect] 内 — 两颗紧挨的星 ratio ≈ 1.4-1.7，
+    # 长条文字（如 "P3.5"）ratio ≥ 1.9，可干净分开。
+    axis_split_max_aspect: float = 1.7
 
 
 def detect_stars(red_mask: np.ndarray, params: StarDetectParams | None = None) -> list[StarCenter]:
@@ -219,11 +227,15 @@ def _detect_once(
             )
             continue
 
-        # 单星检查失败：若连通域足够大且偏长，按主轴拆成 2 颗（中等重叠星的兜底）
+        # 主轴兜底：unimodal overlap（距离变换只给 1 个峰）但形状已经"是星"
+        # 且窄带长条 — 视为两颗紧挨星，沿主轴拆分。aspect 上限挡掉长条文字
+        # （"P3.5" aspect 1.97 不会触发）。
         if (
             p.split_overlapping
             and area >= p.min_split_area
-            and ratio > p.max_aspect_ratio  # 必须偏长才推断是两颗合体
+            and passes_solidity
+            and passes_concavity
+            and p.max_aspect_ratio < ratio <= p.axis_split_max_aspect
         ):
             for px, py, peak_r in _two_centers_along_major_axis(comp):
                 results.append(
